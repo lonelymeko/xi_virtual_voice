@@ -20,10 +20,10 @@ func main() {
 	// Create application with options
 	err := wails.Run(&options.App{
 		Title:       "TTS 虚拟麦克风",
-		Width:       260,
-		Height:      250,
-		MinWidth:    260,
-		MinHeight:   250,
+		Width:       230,
+		Height:      300,
+		MinWidth:    230,
+		MinHeight:   300,
 		MaxWidth:    600,
 		MaxHeight:   800,
 		AlwaysOnTop: false,
