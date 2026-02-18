@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -10,10 +11,13 @@ import (
 
 // App struct
 type App struct {
-	ctx          context.Context
-	ttsService   *TTSService   // 旧版服务（macOS only）
-	ttsServiceV2 *TTSServiceV2 // 新版跨平台服务
-	useLegacy    bool          // 是否使用旧版服务
+	ctx           context.Context
+	ttsService    *TTSService    // 旧版服务（macOS only）
+	ttsServiceV2  *TTSServiceV2  // 新版跨平台服务
+	wsServer      *WSServer      // WebSocket 服务器
+	httpServer    *HTTPServer    // HTTP API 服务器
+	configManager *ConfigManager // 配置管理器
+	useLegacy     bool           // 是否使用旧版服务
 }
 
 // NewApp creates a new App application struct
@@ -31,6 +35,15 @@ func (a *App) startup(ctx context.Context) {
 	fmt.Printf("🚀 启动应用...\n")
 	fmt.Printf("   操作系统: %s\n", runtime.GOOS)
 	fmt.Printf("   架构: %s\n", runtime.GOARCH)
+
+	// 初始化配置管理器
+	configManager, err := NewConfigManager()
+	if err != nil {
+		fmt.Printf("⚠️  配置管理器初始化失败: %v\n", err)
+	} else {
+		a.configManager = configManager
+		fmt.Printf("✅ 配置管理器已初始化\n")
+	}
 
 	// 尝试初始化新版跨平台服务
 	ttsServiceV2, err := NewTTSServiceV2()
@@ -53,6 +66,90 @@ func (a *App) startup(ctx context.Context) {
 		a.ttsServiceV2 = ttsServiceV2
 		a.useLegacy = false
 		fmt.Printf("✅ 使用新版跨平台服务\n")
+
+		// 从配置文件加载默认配置
+		var defaultConfig *WSConfig
+		if a.configManager != nil {
+			savedConfig := a.configManager.GetConfig()
+			defaultConfig = &WSConfig{
+				Voice:         savedConfig.Voice,
+				Language:      savedConfig.Language,
+				MicDevice:     savedConfig.MicDevice,
+				SpeakerDevice: savedConfig.SpeakerDevice,
+				PlayToSpeaker: savedConfig.PlayToSpeaker,
+			}
+			fmt.Printf("📋 从配置文件加载设置\n")
+			fmt.Printf("   音色: %s\n", defaultConfig.Voice)
+			fmt.Printf("   语言: %s\n", defaultConfig.Language)
+			fmt.Printf("   虚拟麦克风: %s\n", defaultConfig.MicDevice)
+			fmt.Printf("   扬声器: %s\n", defaultConfig.SpeakerDevice)
+			fmt.Printf("   播放到扬声器: %v\n", defaultConfig.PlayToSpeaker)
+		} else {
+			// 使用默认配置
+			defaultConfig = &WSConfig{
+				Voice:         "Cherry",
+				Language:      "Auto",
+				MicDevice:     "VB-Cable",
+				SpeakerDevice: "",
+				PlayToSpeaker: false,
+			}
+		}
+
+		// 初始化 WebSocket 服务器
+		a.wsServer = NewWSServer(ttsServiceV2, defaultConfig)
+
+		// 从环境变量读取 WebSocket 配置
+		wsHost := os.Getenv("WS_HOST")
+		if wsHost == "" {
+			wsHost = "localhost"
+		}
+		wsPort := os.Getenv("WS_PORT")
+		if wsPort == "" {
+			wsPort = "7878"
+		}
+		wsPath := os.Getenv("WS_PATH")
+		if wsPath == "" {
+			wsPath = "/ws"
+		}
+
+		// 从环境变量读取 HTTP 配置
+		httpPort := os.Getenv("HTTP_PORT")
+		if httpPort == "" {
+			httpPort = "9091"
+		}
+		httpPath := os.Getenv("HTTP_PATH")
+		if httpPath == "" {
+			httpPath = "/api/tts"
+		}
+
+		fmt.Printf("✅ 服务器已初始化\n")
+		fmt.Printf("   WebSocket - ws://%s:%s%s\n", wsHost, wsPort, wsPath)
+		fmt.Printf("   HTTP API  - http://%s:%s%s\n", wsHost, httpPort, httpPath)
+
+		// 启动 WebSocket 服务器
+		wsAddr := ":" + wsPort
+		go func() {
+			fmt.Printf("🌐 正在启动 WebSocket 服务器...\n")
+			wsMux := http.NewServeMux()
+			wsMux.HandleFunc(wsPath, a.wsServer.HandleWebSocket)
+			if err := http.ListenAndServe(wsAddr, wsMux); err != nil {
+				fmt.Printf("❌ WebSocket 服务器启动失败: %v\n", err)
+			}
+		}()
+		fmt.Printf("🚀 WebSocket 服务器已在后台启动 (ws://%s:%s%s)\n", wsHost, wsPort, wsPath)
+
+		// 启动 HTTP API 服务器
+		a.httpServer = NewHTTPServer(ttsServiceV2, defaultConfig)
+		httpAddr := ":" + httpPort
+		go func() {
+			fmt.Printf("🌐 正在启动 HTTP API 服务器...\n")
+			httpMux := http.NewServeMux()
+			httpMux.HandleFunc(httpPath, a.httpServer.HandleTTS)
+			if err := http.ListenAndServe(httpAddr, httpMux); err != nil {
+				fmt.Printf("❌ HTTP API 服务器启动失败: %v\n", err)
+			}
+		}()
+		fmt.Printf("🚀 HTTP API 服务器已在后台启动 (http://%s:%s%s)\n", wsHost, httpPort, httpPath)
 	}
 
 	if a.ttsService == nil && a.ttsServiceV2 == nil {
@@ -294,4 +391,138 @@ func (a *App) WindowSetAlwaysOnTop(alwaysOnTop bool) error {
 	// 这个方法主要是为了前端调用
 	fmt.Printf("🪟 窗口置顶状态: %v\n", alwaysOnTop)
 	return nil
+}
+
+// StartWebSocketServer 启动 WebSocket 服务器（已废弃，服务器会自动启动）
+func (a *App) StartWebSocketServer(port string) TTSResponse {
+	if a.wsServer == nil {
+		return TTSResponse{
+			Success: false,
+			Error:   "WebSocket 服务器未初始化",
+		}
+	}
+
+	return TTSResponse{
+		Success: true,
+		Message: "WebSocket 服务器已在启动时自动运行 (端口: 7878)",
+	}
+}
+
+// UpdateWSConfig 更新 WebSocket 和 HTTP API 配置
+func (a *App) UpdateWSConfig(voice, language, micDevice, speakerDevice string, playToSpeaker bool) TTSResponse {
+	if a.wsServer == nil && a.httpServer == nil {
+		return TTSResponse{
+			Success: false,
+			Error:   "服务器未初始化",
+		}
+	}
+
+	config := &WSConfig{
+		Voice:         voice,
+		Language:      language,
+		MicDevice:     micDevice,
+		SpeakerDevice: speakerDevice,
+		PlayToSpeaker: playToSpeaker,
+	}
+
+	// 更新 WebSocket 服务器配置
+	if a.wsServer != nil {
+		a.wsServer.UpdateConfig(config)
+	}
+
+	// 更新 HTTP API 服务器配置
+	if a.httpServer != nil {
+		a.httpServer.UpdateConfig(config)
+	}
+
+	// 同时保存到配置文件
+	if a.configManager != nil {
+		ttsConfig := TTSConfig{
+			Voice:         voice,
+			Language:      language,
+			MicDevice:     micDevice,
+			SpeakerDevice: speakerDevice,
+			PlayToSpeaker: playToSpeaker,
+		}
+		if err := a.configManager.UpdateConfig(ttsConfig); err != nil {
+			fmt.Printf("⚠️  保存配置失败: %v\n", err)
+		}
+	}
+
+	return TTSResponse{
+		Success: true,
+		Message: "配置已更新并保存(WebSocket + HTTP API)",
+	}
+}
+
+// GetWSConfig 获取 WebSocket 当前配置
+func (a *App) GetWSConfig() *WSConfig {
+	if a.wsServer == nil {
+		return &WSConfig{}
+	}
+	return a.wsServer.GetConfig()
+}
+
+// SaveConfig 保存当前配置（供前端调用）
+func (a *App) SaveConfig(voice, language, micDevice, speakerDevice string, playToSpeaker bool) TTSResponse {
+	if a.configManager == nil {
+		return TTSResponse{
+			Success: false,
+			Error:   "配置管理器未初始化",
+		}
+	}
+
+	config := TTSConfig{
+		Voice:         voice,
+		Language:      language,
+		MicDevice:     micDevice,
+		SpeakerDevice: speakerDevice,
+		PlayToSpeaker: playToSpeaker,
+	}
+
+	if err := a.configManager.UpdateConfig(config); err != nil {
+		return TTSResponse{
+			Success: false,
+			Error:   fmt.Sprintf("保存配置失败: %v", err),
+		}
+	}
+
+	// 同步更新 WebSocket 配置
+	if a.wsServer != nil {
+		wsConfig := &WSConfig{
+			Voice:         voice,
+			Language:      language,
+			MicDevice:     micDevice,
+			SpeakerDevice: speakerDevice,
+			PlayToSpeaker: playToSpeaker,
+		}
+		a.wsServer.UpdateConfig(wsConfig)
+	}
+
+	return TTSResponse{
+		Success: true,
+		Message: "配置已保存",
+	}
+}
+
+// LoadConfig 加载保存的配置（供前端调用）
+func (a *App) LoadConfig() map[string]interface{} {
+	if a.configManager == nil {
+		return map[string]interface{}{
+			"voice":           "Cherry",
+			"language":        "Auto",
+			"mic_device":      "",
+			"speaker_device":  "",
+			"play_to_speaker": false,
+		}
+	}
+
+	config := a.configManager.GetConfig()
+	return map[string]interface{}{
+		"voice":           config.Voice,
+		"language":        config.Language,
+		"mic_device":      config.MicDevice,
+		"speaker_device":  config.SpeakerDevice,
+		"play_to_speaker": config.PlayToSpeaker,
+	}
 }

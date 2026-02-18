@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { GetAudioDevices, GetAvailableVoices, GetAvailableLanguages, SpeakWithPreview } from '../../wailsjs/go/main/App'
+import { ref, onMounted, watch } from 'vue'
+import { GetAudioDevices, GetAvailableVoices, GetAvailableLanguages, SpeakWithPreview, LoadConfig, SaveConfig } from '../../wailsjs/go/main/App'
 import { WindowSetAlwaysOnTop } from '../../wailsjs/runtime/runtime'
 
 interface AudioDevice {
@@ -39,6 +39,35 @@ const isGenerating = ref(false)
 const statusMessage = ref('')
 const statusType = ref<'success' | 'error' | 'info'>('info')
 
+// 加载状态
+const isLoading = ref(true)
+const loadingSteps = ref({
+  config: { done: false, label: '加载配置' },
+  devices: { done: false, label: '加载音频设备' },
+  voices: { done: false, label: '加载音色列表' },
+  languages: { done: false, label: '加载语言列表' }
+})
+
+// 获取当前加载进度
+const loadingProgress = ref(0)
+const currentLoadingStep = ref('正在初始化...')
+
+const updateLoadingProgress = () => {
+  const steps = Object.values(loadingSteps.value)
+  const doneCount = steps.filter(s => s.done).length
+  loadingProgress.value = Math.round((doneCount / steps.length) * 100)
+  
+  const currentStep = steps.find(s => !s.done)
+  if (currentStep) {
+    currentLoadingStep.value = currentStep.label
+  } else {
+    currentLoadingStep.value = '加载完成'
+    setTimeout(() => {
+      isLoading.value = false
+    }, 300)
+  }
+}
+
 // 切换置顶
 const toggleAlwaysOnTop = async () => {
   isAlwaysOnTop.value = !isAlwaysOnTop.value
@@ -53,26 +82,79 @@ const showStatus = (msg: string, type: 'success' | 'error' | 'info') => {
   setTimeout(() => { statusMessage.value = '' }, 2000)
 }
 
+// 保存配置到后端
+const saveConfigToBackend = async () => {
+  try {
+    await SaveConfig(
+      selectedVoice.value,
+      selectedLanguage.value,
+      selectedMicDevice.value,
+      selectedSpeakerDevice.value,
+      playToSpeaker.value
+    )
+    console.log('✅ 配置已自动保存')
+  } catch (error) {
+    console.error('⚠️ 保存配置失败:', error)
+  }
+}
+
+// 监听配置变化，自动保存
+watch([selectedVoice, selectedLanguage, selectedMicDevice, selectedSpeakerDevice, playToSpeaker], () => {
+  saveConfigToBackend()
+})
+
 // 加载设备
 const loadDevices = async () => {
   try {
+    currentLoadingStep.value = '加载音频设备列表...'
+    
+    // 1. 先加载保存的配置
+    const savedConfig = await LoadConfig()
+    console.log('📋 加载保存的配置:', savedConfig)
+    loadingSteps.value.config.done = true
+    updateLoadingProgress()
+
+    // 2. 获取所有设备
     const devices = await GetAudioDevices()
     audioDevices.value = devices.map((d: any) => ({
       name: d.name,
       isDefault: d.isDefault
     }))
-    
-    const vbCable = audioDevices.value.find((d: AudioDevice) => 
-      d.name.includes('VB-Cable') || d.name.includes('CABLE')
-    )
-    if (vbCable) {
-      selectedMicDevice.value = vbCable.name
+    loadingSteps.value.devices.done = true
+    updateLoadingProgress()
+
+    // 3. 应用保存的配置
+    if (savedConfig.mic_device && audioDevices.value.some(d => d.name === savedConfig.mic_device)) {
+      selectedMicDevice.value = savedConfig.mic_device
+    } else {
+      // 如果没有保存的配置或设备不存在，尝试自动选择 VB-Cable
+      const vbCable = audioDevices.value.find((d: AudioDevice) => 
+        d.name.includes('VB-Cable') || d.name.includes('CABLE')
+      )
+      if (vbCable) {
+        selectedMicDevice.value = vbCable.name
+      }
     }
-    
-    const defaultSpeaker = audioDevices.value.find((d: AudioDevice) => d.isDefault)
-    if (defaultSpeaker) {
-      selectedSpeakerDevice.value = defaultSpeaker.name
+
+    if (savedConfig.speaker_device && audioDevices.value.some(d => d.name === savedConfig.speaker_device)) {
+      selectedSpeakerDevice.value = savedConfig.speaker_device
+    } else {
+      // 如果没有保存的配置，选择默认扬声器
+      const defaultSpeaker = audioDevices.value.find((d: AudioDevice) => d.isDefault)
+      if (defaultSpeaker) {
+        selectedSpeakerDevice.value = defaultSpeaker.name
+      }
     }
+
+    // 应用其他保存的配置
+    if (savedConfig.voice) {
+      selectedVoice.value = savedConfig.voice
+    }
+    if (savedConfig.language) {
+      selectedLanguage.value = savedConfig.language
+    }
+    playToSpeaker.value = savedConfig.play_to_speaker || false
+
   } catch (error: any) {
     showStatus(`❌ ${error}`, 'error')
   }
@@ -81,26 +163,36 @@ const loadDevices = async () => {
 // 加载音色
 const loadVoices = async () => {
   try {
+    currentLoadingStep.value = '加载音色列表...'
     const voiceList = await GetAvailableVoices()
     voices.value = voiceList.map((v: Record<string, string>) => ({
       value: v.value,
       label: v.label
     }))
+    loadingSteps.value.voices.done = true
+    updateLoadingProgress()
   } catch (error: any) {
     console.error('加载音色失败:', error)
+    loadingSteps.value.voices.done = true
+    updateLoadingProgress()
   }
 }
 
 // 加载语言
 const loadLanguages = async () => {
   try {
+    currentLoadingStep.value = '加载语言列表...'
     const languageList = await GetAvailableLanguages()
     languages.value = languageList.map((l: Record<string, string>) => ({
       value: l.value,
       label: l.label
     }))
+    loadingSteps.value.languages.done = true
+    updateLoadingProgress()
   } catch (error: any) {
     console.error('加载语言失败:', error)
+    loadingSteps.value.languages.done = true
+    updateLoadingProgress()
   }
 }
 
@@ -143,15 +235,46 @@ const handleSpeak = async () => {
   }
 }
 
-onMounted(() => {
-  loadDevices()
-  loadVoices()
-  loadLanguages()
+onMounted(async () => {
+  isLoading.value = true
+  currentLoadingStep.value = '正在初始化...'
+  
+  // 顺序加载所有资源
+  await loadDevices()
+  await loadVoices()
+  await loadLanguages()
 })
 </script>
 
 <template>
   <div class="app">
+    <!-- 加载界面 -->
+    <div v-if="isLoading" class="loading-overlay">
+      <div class="loading-content">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">{{ currentLoadingStep }}</div>
+        <div class="loading-progress">
+          <div class="progress-bar">
+            <div class="progress-fill" :style="{ width: loadingProgress + '%' }"></div>
+          </div>
+          <div class="progress-text">{{ loadingProgress }}%</div>
+        </div>
+        <div class="loading-steps">
+          <div 
+            v-for="(step, key) in loadingSteps" 
+            :key="key"
+            class="loading-step"
+            :class="{ done: step.done }"
+          >
+            <span class="step-icon">{{ step.done ? '✓' : '○' }}</span>
+            <span class="step-label">{{ step.label }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主界面 -->
+    <div v-show="!isLoading" class="main-content">
     <!-- 标题栏 -->
     <div class="titlebar">
       <div class="title">🎙️ TTS 工具</div>
@@ -250,6 +373,7 @@ onMounted(() => {
         <span v-else>🚀 发送</span>
       </button>
     </div>
+    </div> <!-- 关闭 main-content -->
   </div>
 </template>
 
@@ -261,6 +385,103 @@ onMounted(() => {
   background: #f5f5f5;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 13px;
+  position: relative;
+}
+
+/* 加载界面 */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.loading-content {
+  text-align: center;
+  color: white;
+  padding: 30px;
+}
+
+.loading-spinner {
+  width: 50px;
+  height: 50px;
+  margin: 0 auto 20px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-text {
+  font-size: 16px;
+  font-weight: 500;
+  margin-bottom: 15px;
+}
+
+.loading-progress {
+  margin: 20px 0;
+}
+
+.progress-bar {
+  width: 200px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+  margin: 0 auto 8px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: white;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.loading-steps {
+  margin-top: 20px;
+  text-align: left;
+  display: inline-block;
+}
+
+.loading-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  opacity: 0.6;
+  transition: opacity 0.3s;
+}
+
+.loading-step.done {
+  opacity: 1;
+}
+
+.step-icon {
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.main-content {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
 }
 
 .titlebar {

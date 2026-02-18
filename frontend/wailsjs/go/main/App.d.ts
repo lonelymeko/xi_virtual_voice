@@ -10,10 +10,20 @@ export function GetAvailableVoices():Promise<Array<Record<string, string>>>;
 
 export function GetPlatformInfo():Promise<Record<string, string>>;
 
+export function GetWSConfig():Promise<main.WSConfig>;
+
 export function Greet(arg1:string):Promise<string>;
+
+export function LoadConfig():Promise<Record<string, any>>;
+
+export function SaveConfig(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<main.TTSResponse>;
 
 export function SpeakToDevice(arg1:string,arg2:string,arg3:string):Promise<main.TTSResponse>;
 
 export function SpeakWithPreview(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:boolean):Promise<main.TTSResponse>;
+
+export function StartWebSocketServer(arg1:string):Promise<main.TTSResponse>;
+
+export function UpdateWSConfig(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<main.TTSResponse>;
 
 export function WindowSetAlwaysOnTop(arg1:boolean):Promise<void>;

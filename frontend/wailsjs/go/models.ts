@@ -30,6 +30,26 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class WSConfig {
+	    voice: string;
+	    language: string;
+	    mic_device: string;
+	    speaker_device: string;
+	    play_to_speaker: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.voice = source["voice"];
+	        this.language = source["language"];
+	        this.mic_device = source["mic_device"];
+	        this.speaker_device = source["speaker_device"];
+	        this.play_to_speaker = source["play_to_speaker"];
+	    }
+	}
 
 }
 

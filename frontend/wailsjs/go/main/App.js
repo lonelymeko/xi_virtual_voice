@@ -18,8 +18,20 @@ export function GetPlatformInfo() {
   return window['go']['main']['App']['GetPlatformInfo']();
 }
 
+export function GetWSConfig() {
+  return window['go']['main']['App']['GetWSConfig']();
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
+}
+
+export function LoadConfig() {
+  return window['go']['main']['App']['LoadConfig']();
+}
+
+export function SaveConfig(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SpeakToDevice(arg1, arg2, arg3) {
@@ -28,6 +40,14 @@ export function SpeakToDevice(arg1, arg2, arg3) {
 
 export function SpeakWithPreview(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['SpeakWithPreview'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function StartWebSocketServer(arg1) {
+  return window['go']['main']['App']['StartWebSocketServer'](arg1);
+}
+
+export function UpdateWSConfig(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateWSConfig'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function WindowSetAlwaysOnTop(arg1) {

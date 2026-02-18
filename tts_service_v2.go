@@ -26,13 +26,39 @@ type TTSServiceV2 struct {
 
 // NewTTSServiceV2 创建跨平台 TTS 服务
 func NewTTSServiceV2() (*TTSServiceV2, error) {
-	// 加载环境变量
-	err := godotenv.Load(".env")
-	if err != nil {
-		err = godotenv.Load("../.env")
-		if err != nil {
-			return nil, fmt.Errorf("加载环境变量失败: %v", err)
+	// 智能加载环境变量（多路径尝试）
+	var err error
+	envPaths := []string{
+		".env",    // 当前目录
+		"../.env", // 上级目录
+		filepath.Join(os.Getenv("HOME"), ".xi_virtual_voice.env"),        // 用户主目录
+		filepath.Join(os.Getenv("USERPROFILE"), ".xi_virtual_voice.env"), // Windows 用户目录
+	}
+
+	envLoaded := false
+	for _, envPath := range envPaths {
+		if envPath == "" {
+			continue
 		}
+		if err = godotenv.Load(envPath); err == nil {
+			fmt.Printf("✅ 已加载配置文件: %s\n", envPath)
+			envLoaded = true
+			break
+		}
+	}
+
+	if !envLoaded {
+		// 尝试从系统环境变量读取
+		if os.Getenv("DASHSCOPE_API_KEY") == "" {
+			return nil, fmt.Errorf("未找到配置文件且未设置环境变量 DASHSCOPE_API_KEY\n请创建 .env 文件或设置系统环境变量")
+		}
+		fmt.Printf("⚠️  未找到 .env 文件，使用系统环境变量\n")
+	}
+
+	// 验证必需的环境变量
+	apiKey := os.Getenv("DASHSCOPE_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("缺少必需的环境变量: DASHSCOPE_API_KEY")
 	}
 
 	// 创建平台实例
@@ -43,10 +69,21 @@ func NewTTSServiceV2() (*TTSServiceV2, error) {
 
 	fmt.Printf("✅ 已初始化平台: %s\n", platform.GetPlatformName())
 
+	// 设置默认值
+	model := os.Getenv("QWEN_VOICE_MODEL")
+	if model == "" {
+		model = "qwen-audio-turbo"
+	}
+
+	endpoint := os.Getenv("DASHSCOPE_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2speech/speech-synthesis"
+	}
+
 	return &TTSServiceV2{
-		apiKey:   os.Getenv("DASHSCOPE_API_KEY"),
-		model:    os.Getenv("QWEN_VOICE_MODEL"),
-		endpoint: os.Getenv("DASHSCOPE_ENDPOINT"),
+		apiKey:   apiKey,
+		model:    model,
+		endpoint: endpoint,
 		platform: platform,
 	}, nil
 }

@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -69,31 +70,24 @@ func (p *WindowsPlatform) CheckDependencies() error {
 		return fmt.Errorf("ffmpeg 未安装\n下载地址: https://www.gyan.dev/ffmpeg/builds/\n或使用 Chocolatey: choco install ffmpeg")
 	}
 
-	// 检查 NirCmd（用于设备切换）
-	cmd = exec.Command("where", "nircmd")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("NirCmd 未安装\n下载地址: https://www.nirsoft.net/utils/nircmd.html\n请将 nircmd.exe 添加到 PATH")
-	}
-
+	fmt.Println("✅ ffmpeg 已安装")
 	return nil
 }
 
-// GetAudioDevices 获取所有音频输出设备（使用 Windows API）
+// GetAudioDevices 获取所有音频输出设备
 func (p *WindowsPlatform) GetAudioDevices() ([]AudioDevice, error) {
 	devices := make([]AudioDevice, 0)
 
-	// 方法1: 使用 NirCmd 获取设备列表
-	cmd := exec.Command("nircmd", "win", "dlg", "", "~Audio Devices")
-	output, err := cmd.CombinedOutput()
+	// 使用 PowerShell 获取设备列表,先导入模块
+	psCmd := `Import-Module AudioDeviceCmdlets -ErrorAction SilentlyContinue; Get-AudioDevice -List | Where-Object {$_.Type -eq "Playback"} | ForEach-Object { $_.Name }`
+	cmd := exec.Command("powershell", "-Command", psCmd)
+	output, err := cmd.Output()
 
 	if err != nil {
-		// 方法2: 使用 PowerShell 获取设备
-		psCmd := `Get-AudioDevice -List | Where-Object {$_.Type -eq "Playback"} | Select-Object -ExpandProperty Name`
-		cmd = exec.Command("powershell", "-Command", psCmd)
-		output, err = cmd.Output()
-		if err != nil {
-			return nil, fmt.Errorf("获取音频设备失败: %v", err)
-		}
+		// 如果 AudioDeviceCmdlets 未安装,使用 Windows API
+		fmt.Printf("⚠️  PowerShell AudioDeviceCmdlets 未安装或加载失败,使用 Windows API\n")
+		fmt.Printf("   错误信息: %v\n", err)
+		return p.getDevicesViaAPI()
 	}
 
 	// 获取当前默认设备
@@ -103,7 +97,7 @@ func (p *WindowsPlatform) GetAudioDevices() ([]AudioDevice, error) {
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "#") {
+		if line != "" {
 			devices = append(devices, AudioDevice{
 				Name:      line,
 				IsDefault: line == currentDevice,
@@ -111,12 +105,9 @@ func (p *WindowsPlatform) GetAudioDevices() ([]AudioDevice, error) {
 		}
 	}
 
-	// 如果上述方法失败，使用 Windows API
+	// 如果没有找到设备,使用 Windows API
 	if len(devices) == 0 {
-		devices, err = p.getDevicesViaAPI()
-		if err != nil {
-			return nil, err
-		}
+		return p.getDevicesViaAPI()
 	}
 
 	return devices, nil
@@ -151,17 +142,12 @@ func (p *WindowsPlatform) getDevicesViaAPI() ([]AudioDevice, error) {
 
 // GetCurrentDevice 获取当前默认输出设备
 func (p *WindowsPlatform) GetCurrentDevice() (string, error) {
-	// 使用 PowerShell 获取当前设备
-	psCmd := `(Get-AudioDevice -Playback).Name`
+	// 使用 PowerShell 获取当前设备,先导入模块
+	psCmd := `Import-Module AudioDeviceCmdlets -ErrorAction SilentlyContinue; (Get-AudioDevice -Playback).Name`
 	cmd := exec.Command("powershell", "-Command", psCmd)
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// 尝试使用 NirCmd
-		cmd = exec.Command("nircmd", "getdefaultsounddevice", "output")
-		output, err = cmd.Output()
-		if err != nil {
-			return "", fmt.Errorf("获取当前设备失败: %v", err)
-		}
+		return "", fmt.Errorf("获取当前设备失败: %v\n输出: %s\n提示: 请确认 AudioDeviceCmdlets 模块已正确安装", err, string(output))
 	}
 
 	return strings.TrimSpace(string(output)), nil
@@ -169,23 +155,18 @@ func (p *WindowsPlatform) GetCurrentDevice() (string, error) {
 
 // SwitchDevice 切换到指定设备
 func (p *WindowsPlatform) SwitchDevice(device string) error {
-	// 方法1: 使用 NirCmd（推荐）
-	cmd := exec.Command("nircmd", "setdefaultsounddevice", device)
-	err := cmd.Run()
+	// AudioDeviceCmdlets 的正确用法是通过管道传递设备对象
+	// Get-AudioDevice -List | Where-Object {$_.Name -eq "设备名"} | Set-AudioDevice
+	psCmd := fmt.Sprintf(`Import-Module AudioDeviceCmdlets -ErrorAction SilentlyContinue; Get-AudioDevice -List | Where-Object {$_.Name -eq "%s"} | Set-AudioDevice`, device)
+	cmd := exec.Command("powershell", "-Command", psCmd)
+	output, err := cmd.CombinedOutput()
 
 	if err != nil {
-		// 方法2: 使用 PowerShell 和 AudioDeviceCmdlets
-		psCmd := fmt.Sprintf(`Set-AudioDevice -Name "%s"`, device)
-		cmd = exec.Command("powershell", "-Command", psCmd)
-		err = cmd.Run()
-
-		if err != nil {
-			return fmt.Errorf("切换设备失败: %v\n提示: 请安装 AudioDeviceCmdlets 模块\nInstall-Module -Name AudioDeviceCmdlets", err)
-		}
+		return fmt.Errorf("切换设备失败: %v\n输出: %s\n提示: 请确认设备名称正确,可用设备列表请查看应用日志", err, string(output))
 	}
 
-	// 等待设备切换完成
-	time.Sleep(800 * time.Millisecond)
+	// 缩短等待时间，从 800ms 减少到 200ms
+	time.Sleep(200 * time.Millisecond)
 	return nil
 }
 
@@ -199,65 +180,145 @@ func (p *WindowsPlatform) RestoreDevice(originalDevice string) error {
 		return nil
 	}
 
-	cmd := exec.Command("nircmd", "setdefaultsounddevice", originalDevice)
+	// 使用正确的 AudioDeviceCmdlets 语法
+	psCmd := fmt.Sprintf(`Import-Module AudioDeviceCmdlets -ErrorAction SilentlyContinue; Get-AudioDevice -List | Where-Object {$_.Name -eq "%s"} | Set-AudioDevice`, originalDevice)
+	cmd := exec.Command("powershell", "-Command", psCmd)
 	err := cmd.Run()
 
-	if err != nil {
-		psCmd := fmt.Sprintf(`Set-AudioDevice -Name "%s"`, originalDevice)
-		cmd = exec.Command("powershell", "-Command", psCmd)
-		err = cmd.Run()
-	}
-
-	time.Sleep(500 * time.Millisecond)
+	// 缩短恢复等待时间，从 500ms 减少到 100ms（因为是异步的）
+	time.Sleep(100 * time.Millisecond)
 	return err
 }
 
-// PlayToDevice 播放音频到指定设备
+// PlayToDevice 播放音频到指定设备(支持虚拟麦克风)
+//
+// 优化方案: 使用 SDL_AUDIO_DEVICE_NAME 环境变量指定设备 (需要 ffplay)
+// 优势: 无需切换系统默认设备，且无副作用
+// 备选: 系统设备切换 (当 ffplay 方案失败时)
 func (p *WindowsPlatform) PlayToDevice(audioFile, device string) error {
-	// 保存当前设备
+	fmt.Printf("🎵 播放音频到设备: %s (尝试 ffplay 环境变量)\n", device)
+
+	// 1. 优先尝试使用 ffplay 环境变量方案 (最快，无痕)
+	if err := playViaFFplayEnv(audioFile, device); err == nil {
+		fmt.Printf("✅ ffplay 播放成功\n")
+		return nil
+	} else {
+		fmt.Printf("⚠️ ffplay 方案失败: %v\n", err)
+	}
+
+	// 2. 如果失败，回退到切换系统默认设备 (最可靠)
+	fmt.Printf("⚠️ 回退到设备切换方案...\n")
+	return p.playWithTempSwitch(audioFile, device)
+}
+
+// playViaFFplayEnv 使用环境变量指定设备进行播放
+// 原理: ffplay 使用 SDL 库，可通过 SDL_AUDIO_DEVICE_NAME 环境变量指定音频设备
+func playViaFFplayEnv(audioFile, device string) error {
+	// 1. 设置环境变量 SDL_AUDIO_DEVICE_NAME
+	// 注意: 设备名称需要精确匹配，且可能涉及编码问题
+	// 在 Windows 上，通常直接使用设备全名即可
+
+	cmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audioFile)
+
+	// 为此命令设置特定环境变量
+	cmd.Env = append(os.Environ(), fmt.Sprintf("SDL_AUDIO_DEVICE_NAME=%s", device))
+
+	// 隐藏窗口
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// ffplay 在找不到设备时通常会打印错误并退出
+		// 我们可以捕获这个错误
+		return fmt.Errorf("ffplay 错误: %v, 输出: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// playViaDShow 保留此函数以备将来可能的改进
+// 目前 Windows ffmpeg 不支持直接输出到指定设备
+func (p *WindowsPlatform) playViaDShow(audioFile, device string) error {
+	// 经过测试发现: Windows 下 ffmpeg 的 DirectShow (-f dshow)
+	// 主要用于音频/视频捕获(输入)，而不是播放(输出)
+	//
+	// ffmpeg 在 Windows 上的音频输出选项:
+	// 1. SDL: 只能输出到默认设备
+	// 2. DirectSound (dsound): 理论支持但实际很难指定设备
+	// 3. WASAPI: 不直接支持设备选择
+	//
+	// 结论: 最可靠的方案仍然是临时切换系统默认设备
+	// 我们已经将切换时间优化到最低 (200ms + 100ms = 300ms 开销)
+
+	return fmt.Errorf("Windows 下 ffmpeg 不支持直接输出到指定设备，使用设备切换方案")
+}
+
+// playWithTempSwitch 临时切换设备播放（优化版：异步恢复）
+func (p *WindowsPlatform) playWithTempSwitch(audioFile, device string) error {
+	// 获取当前设备
 	originalDevice, err := p.GetCurrentDevice()
 	if err != nil {
-		return fmt.Errorf("获取当前设备失败: %v", err)
+		fmt.Printf("⚠️  无法获取当前设备: %v\n", err)
+		// 如果获取失败，直接播放
+		cmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audioFile)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		return cmd.Run()
+	}
+
+	// 检查是否需要切换
+	if device == originalDevice {
+		fmt.Printf("   目标设备与当前相同，无需切换\n")
+		cmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audioFile)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		return cmd.Run()
 	}
 
 	// 切换到目标设备
-	if device != "" && device != originalDevice {
-		if err := p.SwitchDevice(device); err != nil {
-			return err
-		}
-
-		// 确保在函数结束时恢复原设备
-		defer p.RestoreDevice(originalDevice)
+	fmt.Printf("🔄 切换设备: %s -> %s\n", originalDevice, device)
+	if err := p.SwitchDevice(device); err != nil {
+		return fmt.Errorf("切换设备失败: %v", err)
 	}
 
-	// 使用 ffplay 播放（安静模式）
-	cmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audioFile)
+	// 使用 defer 确保播放后恢复设备（无论成功失败）
+	defer func() {
+		fmt.Printf("🔄 恢复设备: %s\n", originalDevice)
+		if err := p.RestoreDevice(originalDevice); err != nil {
+			fmt.Printf("⚠️  恢复设备失败: %v\n", err)
+		}
+	}()
+
+	// 播放音频
+	fmt.Printf("▶️  开始播放...\n")
+	cmd := exec.Command("ffplay",
+		"-nodisp",
+		"-autoexit",
+		"-loglevel", "quiet",
+		audioFile,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
 	if err := cmd.Run(); err != nil {
-		// 如果 ffplay 不可用，尝试使用 NirCmd
-		cmd = exec.Command("nircmd", "mediaplay", "3000", audioFile)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("播放音频失败: %v", err)
-		}
+		return fmt.Errorf("播放失败: %v", err)
 	}
 
-	// 等待播放完成
-	time.Sleep(500 * time.Millisecond)
-
+	fmt.Printf("✅ 播放完成\n")
 	return nil
 }
 
 // PlayToSpeaker 播放音频到系统默认扬声器（不切换设备）
 func (p *WindowsPlatform) PlayToSpeaker(audioFile string) error {
-	fmt.Printf("🔊 使用 ffplay 直接播放到默认扬声器\n")
+	fmt.Printf("🔊 播放到默认扬声器\n")
 
 	// 使用 ffplay 播放（安静模式）
 	cmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audioFile)
+
+	// 隐藏控制台窗口
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true,
+	}
+
 	if err := cmd.Run(); err != nil {
-		// 如果 ffplay 不可用，尝试使用 NirCmd
-		cmd = exec.Command("nircmd", "mediaplay", "3000", audioFile)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("播放音频失败: %v", err)
-		}
+		return fmt.Errorf("播放音频失败: %v", err)
 	}
 
 	return nil
